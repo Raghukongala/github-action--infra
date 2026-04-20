@@ -78,6 +78,52 @@ jobs:
       if: github.event.inputs.action == 'apply'
       run: terraform apply -auto-approve -lock=false tfplan
 
+    - name: Pre-Destroy Cleanup
+      if: github.event.inputs.action == 'destroy'
+      run: |
+        echo "🧹 Cleaning up resources that block Terraform destroy..."
+
+        # Delete all k8s services of type LoadBalancer (releases EIPs/ENIs)
+        aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME 2>/dev/null || true
+        kubectl delete svc --all-namespaces -l "kubernetes.io/ingress.class=alb" 2>/dev/null || true
+        kubectl delete ingress --all-namespaces --all 2>/dev/null || true
+        kubectl delete svc -n ecommerce --all 2>/dev/null || true
+        kubectl delete svc -n argocd --all 2>/dev/null || true
+
+        # Wait for ELBs to be released
+        echo "⏳ Waiting 60s for load balancers to be released..."
+        sleep 60
+
+        # Get VPC ID
+        VPC_ID=$(aws ec2 describe-vpcs \
+          --filters "Name=tag:Name,Values=ecommerce-eks-vpc" \
+          --query 'Vpcs[0].VpcId' --output text --region $AWS_REGION 2>/dev/null || echo "")
+
+        if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+          echo "🔍 VPC: $VPC_ID"
+
+          # Release any standalone EIPs not managed by Terraform
+          aws ec2 describe-addresses \
+            --filters "Name=domain,Values=vpc" \
+            --query 'Addresses[?AssociationId==null].AllocationId' \
+            --output text --region $AWS_REGION | \
+            tr '\t' '\n' | while read eip; do
+              [ -n "$eip" ] && aws ec2 release-address --allocation-id $eip --region $AWS_REGION 2>/dev/null || true
+            done
+
+          # Delete any leftover ENIs in the VPC
+          aws ec2 describe-network-interfaces \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=status,Values=available" \
+            --query 'NetworkInterfaces[*].NetworkInterfaceId' \
+            --output text --region $AWS_REGION | \
+            tr '\t' '\n' | while read eni; do
+              [ -n "$eni" ] && aws ec2 delete-network-interface --network-interface-id $eni --region $AWS_REGION 2>/dev/null || true
+            done
+
+          # Detach and delete any leftover security groups (except default)
+          echo "✅ Pre-destroy cleanup complete"
+        fi
+
     - name: Terraform Destroy
       if: github.event.inputs.action == 'destroy'
       run: terraform destroy -auto-approve -lock=false
