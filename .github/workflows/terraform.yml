@@ -77,19 +77,19 @@ jobs:
       run: terraform plan -out=tfplan
 
     - name: Terraform Apply
-      if: github.event.inputs.action != 'destroy' && github.event.inputs.action != 'plan'
-      run: terraform apply -auto-approve tfplan
+      if: github.event.inputs.action == 'apply' || (github.event_name == 'push')
+      run: terraform apply -auto-approve -lock=false tfplan
 
     - name: Terraform Destroy
       if: github.event.inputs.action == 'destroy'
-      run: terraform destroy -auto-approve
+      run: terraform destroy -auto-approve -lock=false
 
     - name: Update kubeconfig
-      if: github.event.inputs.action != 'destroy' && github.event.inputs.action != 'plan'
+      if: github.event.inputs.action == 'apply' || (github.event_name == 'push')
       run: aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
 
     - name: Install ALB Controller
-      if: github.event.inputs.action != 'destroy' && github.event.inputs.action != 'plan'
+      if: github.event.inputs.action == 'apply' || (github.event_name == 'push')
       run: |
         VPC_ID=$(terraform output -raw vpc_id)
         ROLE_ARN=$(terraform output -raw github_actions_role_arn)
@@ -104,7 +104,7 @@ jobs:
           --set vpcId=$VPC_ID
 
     - name: Install ArgoCD
-      if: github.event.inputs.action != 'destroy' && github.event.inputs.action != 'plan'
+      if: github.event.inputs.action == 'apply' || (github.event_name == 'push')
       run: |
         kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
         kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
