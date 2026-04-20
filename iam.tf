@@ -82,6 +82,19 @@ resource "aws_iam_role_policy_attachment" "github_actions_eks" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
+resource "aws_iam_role_policy" "github_actions_eks_access" {
+  name = "EKSAccess"
+  role = aws_iam_role.github_actions.name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["eks:DescribeCluster", "eks:ListClusters", "eks:AccessKubernetesApi"]
+      Resource = "*"
+    }]
+  })
+}
+
 # ALB Controller Policy
 resource "aws_iam_policy" "alb_controller" {
   name   = "${var.cluster_name}-alb-controller-policy"
