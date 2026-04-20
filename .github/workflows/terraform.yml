@@ -18,6 +18,7 @@ on:
 env:
   AWS_REGION: ap-south-1
   TF_VERSION: 1.5.0
+  CLUSTER_NAME: ecommerce-eks
 
 permissions:
   id-token: write
@@ -39,21 +40,22 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    - name: Install kubectl
+      run: |
+        curl -LO "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl"
+        chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+    - name: Install Helm
+      run: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: ${{ env.TF_VERSION }}
+        terraform_wrapper: false
 
-    - name: Bootstrap S3 & DynamoDB
+    - name: Bootstrap DynamoDB Lock Table
       run: |
-        aws s3api head-bucket --bucket kannaya123-ecom 2>/dev/null || \
-        aws s3api create-bucket \
-          --bucket kannaya123-ecom \
-          --region $AWS_REGION \
-          --create-bucket-configuration LocationConstraint=$AWS_REGION
-        aws s3api put-bucket-versioning \
-          --bucket kannaya123-ecom \
-          --versioning-configuration Status=Enabled
         aws dynamodb describe-table --table-name raghuterraform-lock --region $AWS_REGION 2>/dev/null || \
         aws dynamodb create-table \
           --table-name raghuterraform-lock \
@@ -71,42 +73,6 @@ jobs:
     - name: Terraform Init
       run: terraform init
 
-    - name: Force Unlock State
-      run: |
-        aws dynamodb delete-item \
-          --table-name raghuterraform-lock \
-          --key '{"LockID":{"S":"kannaya123-ecom/eks/ecommerce/terraform.tfstate"}}' \
-          --region $AWS_REGION 2>/dev/null || true
-
-    - name: Fix State - Remove and Reimport
-      run: |
-        # Import ECR repos
-        terraform import 'aws_ecr_repository.repos["frontend"]' ecommerce/frontend 2>/dev/null || true
-        terraform import 'aws_ecr_repository.repos["product-service"]' ecommerce/product-service 2>/dev/null || true
-        terraform import 'aws_ecr_repository.repos["order-service"]' ecommerce/order-service 2>/dev/null || true
-        terraform import 'aws_ecr_repository.repos["user-service"]' ecommerce/user-service 2>/dev/null || true
-        terraform import 'aws_ecr_repository.repos["payment-service"]' ecommerce/payment-service 2>/dev/null || true
-
-        # Import IAM roles
-        terraform import aws_iam_role.eks_cluster ecommerce-eks-cluster-role 2>/dev/null || true
-        terraform import aws_iam_role.eks_node ecommerce-eks-node-role 2>/dev/null || true
-        terraform import aws_iam_role.github_actions ecommerce-eks-github-actions-role 2>/dev/null || true
-
-        # Import IAM policy
-        terraform import aws_iam_policy.alb_controller arn:aws:iam::957948932374:policy/ecommerce-eks-alb-controller-policy 2>/dev/null || true
-
-        # Import OIDC providers
-        terraform import aws_iam_openid_connect_provider.github_actions arn:aws:iam::957948932374:oidc-provider/token.actions.githubusercontent.com 2>/dev/null || true
-
-        # Import EKS resources
-        terraform import aws_eks_cluster.main ecommerce-eks 2>/dev/null || true
-        terraform import aws_eks_node_group.main ecommerce-eks:ecommerce-eks-ng 2>/dev/null || true
-        terraform import aws_eks_addon.ebs_csi ecommerce-eks:aws-ebs-csi-driver 2>/dev/null || true
-        terraform import aws_iam_role_policy_attachment.eks_node_policy ecommerce-eks-node-role/arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy 2>/dev/null || true
-        terraform import aws_iam_role_policy_attachment.eks_cni_policy ecommerce-eks-node-role/arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy 2>/dev/null || true
-        terraform import aws_iam_role_policy_attachment.eks_ecr_policy ecommerce-eks-node-role/arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly 2>/dev/null || true
-        terraform import aws_iam_role_policy_attachment.eks_cluster_policy ecommerce-eks-cluster-role/arn:aws:iam::aws:policy/AmazonEKSClusterPolicy 2>/dev/null || true
-
     - name: Terraform Plan
       run: terraform plan -out=tfplan
 
@@ -120,22 +86,20 @@ jobs:
 
     - name: Update kubeconfig
       if: github.event.inputs.action != 'destroy' && github.event.inputs.action != 'plan'
-      run: |
-        CLUSTER=$(aws eks list-clusters --region $AWS_REGION \
-          --query "clusters[?contains(@,'ecommerce')]" --output text)
-        aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER
+      run: aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
 
     - name: Install ALB Controller
       if: github.event.inputs.action != 'destroy' && github.event.inputs.action != 'plan'
       run: |
+        VPC_ID=$(terraform output -raw vpc_id)
+        ROLE_ARN=$(terraform output -raw github_actions_role_arn)
         helm repo add eks https://aws.github.io/eks-charts
         helm repo update
-        VPC_ID=$(terraform output -raw vpc_id)
         helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
           -n kube-system \
-          --set clusterName=ecommerce-eks \
+          --set clusterName=$CLUSTER_NAME \
           --set serviceAccount.create=true \
-          --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$(terraform output -raw github_actions_role_arn) \
+          --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$ROLE_ARN \
           --set region=$AWS_REGION \
           --set vpcId=$VPC_ID
 
@@ -145,7 +109,6 @@ jobs:
         kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
         kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
         kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=300s
-        # Patch argocd-server to run insecure (for ALB)
         kubectl patch deployment argocd-server -n argocd \
           --type json \
           -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--insecure"}]'
@@ -153,5 +116,4 @@ jobs:
         kubectl get secret argocd-initial-admin-secret -n argocd \
           -o jsonpath="{.data.password}" | base64 -d
         echo ""
-        echo "Apply ArgoCD application:"
         kubectl apply -f https://raw.githubusercontent.com/Raghukongala/girhub-action/main/argocd/application.yaml
