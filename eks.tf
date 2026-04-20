@@ -13,6 +13,10 @@ resource "aws_eks_cluster" "main" {
     authentication_mode = "API_AND_CONFIG_MAP"
   }
 
+  lifecycle {
+    ignore_changes = [access_config]
+  }
+
   depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
 }
 
