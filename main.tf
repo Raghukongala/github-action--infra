@@ -11,7 +11,7 @@ terraform {
     }
   }
   backend "s3" {
-    bucket         = "pydahbucket"
+    bucket         = "kannaya123-ecom"
     key            = "eks/ecommerce/terraform.tfstate"
     region         = "ap-south-1"
     dynamodb_table = "raghuterraform-lock"
