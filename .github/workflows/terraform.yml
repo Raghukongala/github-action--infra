@@ -71,6 +71,14 @@ jobs:
     - name: Terraform Init
       run: terraform init
 
+    - name: Import existing resources
+      run: |
+        terraform import aws_eks_cluster.main ecommerce-eks 2>/dev/null || true
+        terraform import aws_eks_node_group.main ecommerce-eks:ecommerce-eks-ng 2>/dev/null || true
+        terraform import aws_eks_addon.ebs_csi ecommerce-eks:aws-ebs-csi-driver 2>/dev/null || true
+        terraform import aws_iam_role.eks_cluster ecommerce-eks-cluster-role 2>/dev/null || true
+        terraform import aws_iam_role.eks_node ecommerce-eks-node-role 2>/dev/null || true
+
     - name: Terraform Plan
       run: terraform plan -out=tfplan
 
