@@ -57,12 +57,12 @@ resource "aws_iam_role" "github_actions" {
     Statement = [{
       Effect = "Allow"
       Principal = {
-        Federated = "arn:aws:iam::957948932374:oidc-provider/token.actions.githubusercontent.com"
+        Federated = aws_iam_openid_connect_provider.github_actions.arn
       }
       Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:Raghukongala/ecommerce-app:*"
+          "token.actions.githubusercontent.com:sub" = "repo:Raghukongala/girhub-action:*"
         }
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
