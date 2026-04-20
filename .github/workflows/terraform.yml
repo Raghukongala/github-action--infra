@@ -71,8 +71,17 @@ jobs:
     - name: Terraform Init
       run: terraform init
 
-    - name: Import existing resources
+    - name: Fix State - Remove and Reimport
       run: |
+        # Remove stale state entries
+        terraform state rm aws_eks_cluster.main 2>/dev/null || true
+        terraform state rm aws_iam_openid_connect_provider.eks 2>/dev/null || true
+        terraform state rm aws_eks_addon.ebs_csi 2>/dev/null || true
+        terraform state rm aws_eks_node_group.main 2>/dev/null || true
+        terraform state rm aws_iam_role.eks_cluster 2>/dev/null || true
+        terraform state rm aws_iam_role.eks_node 2>/dev/null || true
+
+        # Reimport existing resources
         terraform import aws_eks_cluster.main ecommerce-eks 2>/dev/null || true
         terraform import aws_eks_node_group.main ecommerce-eks:ecommerce-eks-ng 2>/dev/null || true
         terraform import aws_eks_addon.ebs_csi ecommerce-eks:aws-ebs-csi-driver 2>/dev/null || true
@@ -117,6 +126,13 @@ jobs:
         kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
         kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
         kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=300s
+        # Patch argocd-server to run insecure (for ALB)
+        kubectl patch deployment argocd-server -n argocd \
+          --type json \
+          -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--insecure"}]'
         echo "ArgoCD admin password:"
         kubectl get secret argocd-initial-admin-secret -n argocd \
           -o jsonpath="{.data.password}" | base64 -d
+        echo ""
+        echo "Apply ArgoCD application:"
+        kubectl apply -f https://raw.githubusercontent.com/Raghukongala/girhub-action/main/argocd/application.yaml
